@@ -31,6 +31,13 @@
         "mockery/mockery": "^1.6",
         "orchestra/testbench": "^9.0"
     },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Beginly\\SecretsManager\\SecretsManagerServiceProvider"
+            ]
+        }
+    },
     "minimum-stability": "dev",
     "prefer-stable": true
 }
