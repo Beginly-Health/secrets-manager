@@ -1,0 +1,36 @@
+{
+    "name": "beginly/secrets-manager",
+    "description": "AWS Secrets Manager integration for Laravel applications with built-in caching and comprehensive error handling",
+    "version": "1.0.0",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "aws", "secrets-manager", "secrets", "configuration", "cache"],
+    "authors": [
+        {
+            "name": "Beginly Health"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Beginly\\SecretsManager\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Beginly\\SecretsManager\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "aws/aws-sdk-php": "^3.0",
+        "illuminate/support": "^11.0|^12.0",
+        "illuminate/cache": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^9.0"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
