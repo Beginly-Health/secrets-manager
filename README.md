@@ -8,6 +8,7 @@ AWS Secrets Manager integration for Laravel applications with environment-based 
 - **Generic secret fetching:** Returns entire secret as array - use any keys you need for any purpose
 - **Intelligent rotation detection:** Automatically detects rotation schedules and minimizes AWS API calls
 - **Smart caching:** Dynamic TTL based on rotation schedule - caches for months when rotation is far away
+- **Encrypted caching:** Secrets are encrypted using Laravel's encryption before caching
 - **Structure-agnostic:** No validation or assumptions about secret contents - works with ANY JSON structure
 - **Laravel integration:** Register as singleton, use in any service provider
 
@@ -296,17 +297,37 @@ Your EC2/ECS/Lambda instances need this IAM policy:
 }
 ```
 
+## Security
+
+### Encrypted Caching
+
+**All secrets are encrypted before being stored in Laravel's cache.** This provides defense-in-depth security:
+
+- Secrets are encrypted using Laravel's `Crypt` facade (AES-256-CBC encryption)
+- Encryption key is your application's `APP_KEY`
+- Even if cache storage is compromised, secrets remain protected
+- Automatic decryption on retrieval with error handling
+
+**Cache Security Model:**
+- ✅ Secrets encrypted at rest in cache (database, Redis, file, etc.)
+- ✅ Rotation metadata is not encrypted (contains no sensitive data)
+- ✅ Graceful handling of decryption failures (automatic refetch)
+- ✅ Same encryption used throughout Laravel applications
+
+**Important:** Protect your `APP_KEY` - it's used to encrypt cached secrets. If `APP_KEY` is rotated, cached secrets will be automatically refetched from AWS.
+
 ## How It Works
 
 1. **Package Provider Registers Service:** `SecretsManagerServiceProvider` registers `SecretsManagerService` as singleton
 2. **Application Boot:** Your `AppServiceProvider::boot()` method runs
 3. **Environment Check:** Your app detects `APP_ENV` value and decides whether to fetch secrets
 4. **Fetch Secret:** Your app calls `SecretsManagerService::getSecret()`
-5. **Service Fetches:** Service fetches from AWS (or returns cached value)
-6. **Extract Values:** Your app extracts the values it needs from the secret (any structure)
-7. **Update Config:** Your app sets `Config::set()` for whatever you need (DB, API keys, etc.)
-8. **Intelligent Cache:** Service caches based on rotation schedule (short-term during rotation, long-term when far away)
-9. **Use Secrets:** Your application uses the configured values
+5. **Service Fetches:** Service fetches from AWS (or returns encrypted cached value)
+6. **Decrypt & Return:** Service decrypts cached secrets before returning them
+7. **Extract Values:** Your app extracts the values it needs from the secret (any structure)
+8. **Update Config:** Your app sets `Config::set()` for whatever you need (DB, API keys, etc.)
+9. **Intelligent Cache:** Service encrypts and caches based on rotation schedule (short-term during rotation, long-term when far away)
+10. **Use Secrets:** Your application uses the configured values
 
 ## Intelligent Credential Rotation Detection
 

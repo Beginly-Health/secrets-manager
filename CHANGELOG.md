@@ -5,6 +5,23 @@ All notable changes to `beginly/secrets-manager` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-16
+
+### Added
+- **Encrypted caching**: All secrets are now encrypted using Laravel's `Crypt` facade before being stored in cache
+- Automatic decryption on cache retrieval with graceful error handling
+- Security documentation in README explaining encryption model
+
+### Security
+- **Defense-in-depth protection**: Cached secrets are now encrypted at rest using AES-256-CBC encryption
+- Secrets remain protected even if cache storage (database, Redis, files) is compromised
+- Automatic refetch if decryption fails (e.g., after `APP_KEY` rotation)
+
+### Changed
+- Cache storage now stores encrypted secret data instead of plain text
+- Added `Illuminate\Support\Facades\Crypt` dependency for encryption
+- Updated "How It Works" documentation to reflect encryption flow
+
 ## [1.1.1] - 2026-02-16
 
 ### Changed

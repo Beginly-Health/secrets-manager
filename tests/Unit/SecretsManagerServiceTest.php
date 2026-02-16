@@ -9,16 +9,24 @@ use Aws\SecretsManager\SecretsManagerClient;
 use Beginly\SecretsManager\SecretsManagerService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 use Mockery;
 use Orchestra\Testbench\TestCase;
 
 class SecretsManagerServiceTest extends TestCase
 {
+    protected function defineEnvironment($app): void
+    {
+        // Set encryption key for testing
+        $app['config']->set('app.key', 'base64:' . base64_encode(random_bytes(32)));
+    }
+
     public function testGetSecretReturnsCachedValueWhenRotationNotImminent(): void
     {
         $secretName = 'test-secret';
         $expectedData = ['username' => 'testuser', 'password' => 'testpass'];
+        $encryptedData = 'encrypted-secret-data';
 
         // Set next rotation 60 days away (well beyond the 7-day buffer)
         $nextRotation = (new \DateTimeImmutable())->modify('+60 days')->format('Y-m-d H:i:s');
@@ -31,12 +39,17 @@ class SecretsManagerServiceTest extends TestCase
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
-            ->andReturn($expectedData);
+            ->andReturn($encryptedData);
 
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn($metadata);
+
+        Crypt::shouldReceive('decrypt')
+            ->once()
+            ->with($encryptedData)
+            ->andReturn($expectedData);
 
         Log::shouldReceive('debug')
             ->once()
@@ -65,10 +78,15 @@ class SecretsManagerServiceTest extends TestCase
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn(null);
 
-        // Cache will be called with secret data and metadata
+        // Cache will be called with encrypted secret data and metadata
+        Crypt::shouldReceive('encrypt')
+            ->once()
+            ->with($secretData)
+            ->andReturn('encrypted-data');
+
         Cache::shouldReceive('put')
             ->once()
-            ->with("aws_secret:{$secretName}", $secretData, Mockery::type('int'));
+            ->with("aws_secret:{$secretName}", 'encrypted-data', Mockery::type('int'));
 
         Cache::shouldReceive('put')
             ->once()
@@ -132,17 +150,27 @@ class SecretsManagerServiceTest extends TestCase
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
-            ->andReturn($oldData);
+            ->andReturn('encrypted-old-data');
 
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn($metadata);
 
+        Crypt::shouldReceive('decrypt')
+            ->once()
+            ->with('encrypted-old-data')
+            ->andReturn($oldData);
+
         // Should refetch because we're within buffer and more than 1 hour since last check
+        Crypt::shouldReceive('encrypt')
+            ->once()
+            ->with($newData)
+            ->andReturn('encrypted-new-data');
+
         Cache::shouldReceive('put')
             ->once()
-            ->with("aws_secret:{$secretName}", $newData, Mockery::type('int'));
+            ->with("aws_secret:{$secretName}", 'encrypted-new-data', Mockery::type('int'));
 
         Cache::shouldReceive('put')
             ->once()
@@ -378,18 +406,10 @@ class SecretsManagerServiceTest extends TestCase
     {
         parent::setUp();
 
-        // Mock facades
-        Config::shouldReceive('get')
-            ->with('services.aws.secrets_cache_ttl', 300)
-            ->andReturn(300);
-
-        Config::shouldReceive('get')
-            ->with('services.aws.secrets_rotation_buffer_days', 7)
-            ->andReturn(7);
-
-        Config::shouldReceive('get')
-            ->with('services.aws.secrets_region', 'us-east-1')
-            ->andReturn('us-east-1');
+        // Set up AWS secrets configuration using real config
+        \config(['services.aws.secrets_cache_ttl' => 300]);
+        \config(['services.aws.secrets_rotation_buffer_days' => 7]);
+        \config(['services.aws.secrets_region' => 'us-east-1']);
     }
 
     protected function tearDown(): void

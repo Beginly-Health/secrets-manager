@@ -7,6 +7,7 @@ namespace Beginly\SecretsManager;
 use Aws\Exception\AwsException;
 use Aws\SecretsManager\SecretsManagerClient;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -57,8 +58,25 @@ class SecretsManagerService
         $metadataKey = "aws_secret_metadata:{$secretName}";
 
         // Check if we have cached secret data
-        $cached = Cache::get($cacheKey);
+        $encryptedCached = Cache::get($cacheKey);
         $metadata = Cache::get($metadataKey);
+
+        // Decrypt cached secret if it exists
+        $cached = null;
+        if ($encryptedCached !== null) {
+            try {
+                $cached = Crypt::decrypt($encryptedCached);
+            } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+                Log::warning("AWS Secrets Manager: Failed to decrypt cached secret, refetching", [
+                    'secret' => $secretName,
+                    'error' => $e->getMessage(),
+                ]);
+                // Cache is corrupted, clear it and refetch
+                Cache::forget($cacheKey);
+                Cache::forget($metadataKey);
+                return $this->fetchAndCacheSecret($secretName);
+            }
+        }
 
         // If we have cached secret, check if we need to validate rotation status
         if ($cached !== null && $metadata !== null) {
@@ -153,8 +171,9 @@ class SecretsManagerService
             // Determine cache TTL based on rotation schedule
             $cacheTtl = $this->calculateCacheTtl($metadata['next_rotation'] ?? null);
 
-            // Cache the secret and metadata
-            Cache::put($cacheKey, $secretData, $cacheTtl);
+            // Encrypt and cache the secret (metadata is not sensitive)
+            $encryptedData = Crypt::encrypt($secretData);
+            Cache::put($cacheKey, $encryptedData, $cacheTtl);
             Cache::put($metadataKey, $metadata, $cacheTtl);
 
             Log::info("AWS Secrets Manager: Successfully fetched and cached secret", [
