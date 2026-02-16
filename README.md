@@ -4,11 +4,11 @@ AWS Secrets Manager integration for Laravel applications with environment-based 
 
 ## Features
 
-- **Environment-based credential fetching:** Works with AWS IAM roles or access keys
-- **Generic secret fetching:** Returns entire secret as array - use any keys you need
+- **Environment-based authentication:** Works with AWS IAM roles or access keys
+- **Generic secret fetching:** Returns entire secret as array - use any keys you need for any purpose
 - **Intelligent rotation detection:** Automatically detects rotation schedules and minimizes AWS API calls
 - **Smart caching:** Dynamic TTL based on rotation schedule - caches for months when rotation is far away
-- **Flexible structure:** Works with any secret structure - no validation, no restrictions
+- **Structure-agnostic:** No validation or assumptions about secret contents - works with ANY JSON structure
 - **Laravel integration:** Register as singleton, use in any service provider
 
 ## Installation
@@ -60,14 +60,10 @@ AWS_SECRETS_REGION=us-east-1
 AWS_SECRETS_CACHE_TTL=300
 AWS_SECRETS_ROTATION_BUFFER_DAYS=7
 
-# Your secret names (example)
+# Your secret names (examples for any use case)
 AWS_SECRETS_DB_NAME=your-app/database/production
-
-# Connection details remain in .env
-DB_HOST=your-db-host.com
-DB_PORT=3306
-DB_DATABASE=your_database
-# DB_USERNAME and DB_PASSWORD will be fetched from Secrets Manager
+AWS_SECRETS_API_KEY=your-app/api-keys/production
+AWS_SECRETS_OAUTH=your-app/oauth-credentials/production
 ```
 
 ### Laravel Services Config
@@ -91,9 +87,15 @@ Add to `config/services.php`:
 
 ## Secret Structure
 
-Secrets in AWS Secrets Manager must contain username and password (extra fields are allowed but ignored):
+**The package is completely structure-agnostic.** Secrets can contain ANY valid JSON structure. The package simply:
+1. Fetches the secret from AWS Secrets Manager
+2. Parses the JSON
+3. Returns the entire structure as an associative array
+4. Your application decides what to do with the data
 
-### Minimum Required Structure
+### Example Structures
+
+**Database Credentials:**
 ```json
 {
     "username": "admin_user",
@@ -101,29 +103,50 @@ Secrets in AWS Secrets Manager must contain username and password (extra fields 
 }
 ```
 
-### RDS-Managed Secrets (Extra Fields Ignored)
+**API Keys:**
 ```json
 {
-    "username": "admin_user",
-    "password": "rotating_password",
-    "engine": "postgres",
-    "host": "example.rds.amazonaws.com",
-    "port": 5432,
-    "dbClusterIdentifier": "cluster-id"
+    "api_key": "sk-1234567890abcdef",
+    "api_secret": "secret-key-here",
+    "webhook_secret": "whsec_1234567890"
 }
 ```
 
-**Note:** Only `username` and `password` are extracted and used. All other fields (host, port, engine, etc.) are ignored. This allows compatibility with both simple secrets and RDS-managed secrets with automatic rotation.
+**OAuth Credentials:**
+```json
+{
+    "client_id": "oauth-client-id",
+    "client_secret": "oauth-client-secret",
+    "redirect_uri": "https://example.com/callback"
+}
+```
 
-**Important:** Host, port, and database values remain in `.env` files. Only credentials rotate via Secrets Manager.
+**Complex Application Config:**
+```json
+{
+    "database": {
+        "username": "db_user",
+        "password": "db_pass"
+    },
+    "redis": {
+        "password": "redis_pass"
+    },
+    "smtp": {
+        "username": "smtp_user",
+        "password": "smtp_pass"
+    }
+}
+```
+
+**Any JSON structure works** - the package doesn't validate or require any specific fields.
 
 ## Usage
 
-### Basic Setup
+### Basic Concept
 
-**IMPORTANT:** This package does NOT automatically configure your databases. You must add configuration logic to your application's service provider.
+**IMPORTANT:** This package does NOT automatically configure anything in your application. It simply fetches secrets and returns them as arrays. You decide how to use the data.
 
-### Configuring Database Credentials
+### Example 1: Database Credentials
 
 Add to your `app/Providers/AppServiceProvider.php`:
 
@@ -149,28 +172,25 @@ public function boot(): void
 }
 ```
 
-### Example: Multiple Databases (beginly-admin)
+### Example 2: API Keys and External Services
 
 ```php
 public function boot(): void
 {
-    if (App::environment() === 'production' || App::environment() === 'staging') {
+    if (App::environment() !== 'local') {
         $service = app(SecretsManagerService::class);
 
-        // Admin database
-        $adminSecret = $service->getSecret(config('services.aws.admin_db_secret_name'));
-        Config::set('database.connections.pgsql.username', $adminSecret['username']);
-        Config::set('database.connections.pgsql.password', $adminSecret['password']);
+        // Fetch API credentials
+        $apiSecrets = $service->getSecret(config('services.aws.api_secrets_name'));
 
-        // Beginly database
-        $beginlySecret = $service->getSecret(config('services.aws.beginly_db_secret_name'));
-        Config::set('database.connections.beginly.username', $beginlySecret['username']);
-        Config::set('database.connections.beginly.password', $beginlySecret['password']);
+        Config::set('services.stripe.key', $apiSecrets['stripe_key']);
+        Config::set('services.stripe.secret', $apiSecrets['stripe_secret']);
+        Config::set('services.openai.api_key', $apiSecrets['openai_key']);
     }
 }
 ```
 
-### Example: Single Database with Force Enable for Local Testing
+### Example 3: Multiple Credentials with Environment Detection
 
 ```php
 public function boot(): void
@@ -184,15 +204,41 @@ public function boot(): void
     }
 
     if ($environment === 'local' && !$forceEnabled) {
-        return; // Use .env credentials
+        return; // Use .env values
     }
 
     // Fetch from AWS
     $service = app(SecretsManagerService::class);
-    $secret = $service->getSecret(config('services.aws.db_secret'));
 
-    Config::set('database.connections.mysql.username', $secret['username']);
-    Config::set('database.connections.mysql.password', $secret['password']);
+    // Database credentials
+    $dbSecret = $service->getSecret(config('services.aws.db_secret_name'));
+    Config::set('database.connections.pgsql.username', $dbSecret['username']);
+    Config::set('database.connections.pgsql.password', $dbSecret['password']);
+
+    // Application secrets
+    $appSecrets = $service->getSecret(config('services.aws.app_secrets_name'));
+    Config::set('app.key', $appSecrets['app_key']);
+    Config::set('services.mailgun.secret', $appSecrets['mailgun_secret']);
+}
+```
+
+### Example 4: Complex Nested Structures
+
+```php
+public function boot(): void
+{
+    if (App::environment() !== 'local') {
+        $service = app(SecretsManagerService::class);
+
+        // Fetch complex secret with nested structure
+        $secrets = $service->getSecret('production/all-credentials');
+
+        // Access nested values
+        Config::set('database.connections.pgsql.username', $secrets['database']['username']);
+        Config::set('database.connections.pgsql.password', $secrets['database']['password']);
+        Config::set('cache.stores.redis.password', $secrets['redis']['password']);
+        Config::set('mail.password', $secrets['smtp']['password']);
+    }
 }
 ```
 
@@ -212,22 +258,24 @@ This package is designed as a **utility library**, not an opinionated framework.
 
 **The package provides:**
 - `SecretsManagerService` with `getSecret()` method - fetches and returns entire secret as array
-- Built-in caching (5-minute TTL) and comprehensive error handling
+- Intelligent rotation detection with dynamic caching
 - `clearCache()` method for manual cache invalidation
+- `getRotationMetadata()` method for inspecting rotation schedules
 
 **The package does NOT provide:**
-- Automatic database configuration
-- Assumptions about your connection names
+- Automatic configuration of anything in your app
+- Validation of secret structure or contents
+- Assumptions about what the secret contains
 - Hardcoded environment detection logic
 
 **Why?**
 Every Laravel application has different needs:
-- Different database connection names
-- Different number of databases
+- Different types of secrets (DB, API keys, OAuth, certificates, etc.)
+- Different secret structures
 - Different environment detection requirements
-- Different secret naming conventions
+- Different use cases beyond just databases
 
-By keeping the package generic, it works with ANY Laravel app's architecture.
+By keeping the package completely structure-agnostic, it works for ANY use case.
 
 ### AWS IAM Permissions
 
@@ -255,10 +303,10 @@ Your EC2/ECS/Lambda instances need this IAM policy:
 3. **Environment Check:** Your app detects `APP_ENV` value and decides whether to fetch secrets
 4. **Fetch Secret:** Your app calls `SecretsManagerService::getSecret()`
 5. **Service Fetches:** Service fetches from AWS (or returns cached value)
-6. **Extract Values:** Your app extracts the values it needs from the secret (e.g., username, password)
-7. **Update Config:** Your app sets `Config::set()` for database connections
-8. **Cache:** Service stores secret for 5 minutes (configurable)
-9. **Connect:** Laravel connects to database with fetched credentials
+6. **Extract Values:** Your app extracts the values it needs from the secret (any structure)
+7. **Update Config:** Your app sets `Config::set()` for whatever you need (DB, API keys, etc.)
+8. **Intelligent Cache:** Service caches based on rotation schedule (short-term during rotation, long-term when far away)
+9. **Use Secrets:** Your application uses the configured values
 
 ## Intelligent Credential Rotation Detection
 
@@ -338,20 +386,20 @@ $metadata = $service->getRotationMetadata('your-secret-name');
 
 ### Application Fails to Start
 
-**Error:** "Failed to fetch admin database credentials from AWS Secrets Manager"
+**Error:** "Failed to fetch [secret-name] from AWS Secrets Manager"
 
 **Solutions:**
 1. Verify `APP_ENV` is set correctly
-2. Check IAM permissions (`secretsmanager:GetSecretValue`)
+2. Check IAM permissions (`secretsmanager:GetSecretValue` and `secretsmanager:DescribeSecret`)
 3. Verify secret names match `.env` configuration
 4. Confirm AWS region is correct
 5. Check application logs: `storage/logs/laravel.log`
 
-### Missing Required Fields
+### Invalid JSON in Secret
 
-**Error:** "Database secret is missing required fields: username" or "...password"
+**Error:** "Secret contains invalid JSON"
 
-**Solution:** Ensure secret contains both `username` and `password` fields. Extra fields are allowed and will be ignored.
+**Solution:** Verify the secret in AWS Secrets Manager contains valid JSON. Use the AWS console to validate the JSON syntax.
 
 ### Testing Mode Not Working
 
@@ -404,8 +452,8 @@ sail artisan secrets:test your-secret-name
 
 The command will:
 - Fetch the secret from AWS Secrets Manager
-- Display available keys (values are hidden for security)
-- Show database credentials if username/password keys are present
+- Display all keys in the secret (values are masked for security)
+- Show the secret structure without exposing sensitive values
 - Show troubleshooting tips on failure
 
 ## Reusing in Other Applications
@@ -419,7 +467,7 @@ To use this package in another Laravel application:
 5. Configure secrets in `.env`
 6. **Add configuration logic to your AppServiceProvider** (see Usage section above)
 
-The package is designed to be generic and reusable across any Laravel application. Each application controls its own database configuration by calling the service from its own `AppServiceProvider::boot()` method.
+The package is designed to be generic and reusable across any Laravel application for ANY type of secret. Each application controls how it uses the secrets by calling the service from its own `AppServiceProvider::boot()` method.
 
 ## License
 

@@ -5,6 +5,24 @@ All notable changes to `beginly/secrets-manager` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-02-16
+
+### Changed
+- **Documentation clarity:** Updated README to emphasize the package is completely structure-agnostic
+- Removed all database-specific language and assumptions from documentation
+- Added examples for multiple use cases: API keys, OAuth credentials, complex nested structures
+- Clarified that the package works with ANY JSON structure without validation
+- Updated troubleshooting section to be use-case agnostic
+
+### Documentation
+- Enhanced README with examples for:
+  - Database credentials
+  - API keys and external services
+  - OAuth credentials
+  - Complex nested application configurations
+- Removed incorrect statement about required fields (package requires no specific fields)
+- Updated "Design Philosophy" section to emphasize structure-agnostic nature
+
 ## [1.1.0] - 2026-02-16
 
 ### Added
