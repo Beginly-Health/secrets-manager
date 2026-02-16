@@ -6,7 +6,8 @@ AWS Secrets Manager integration for Laravel applications with environment-based 
 
 - **Environment-based credential fetching:** Works with AWS IAM roles or access keys
 - **Generic secret fetching:** Returns entire secret as array - use any keys you need
-- **Built-in caching:** 5-minute TTL reduces AWS API calls
+- **Intelligent rotation detection:** Automatically detects rotation schedules and minimizes AWS API calls
+- **Smart caching:** Dynamic TTL based on rotation schedule - caches for months when rotation is far away
 - **Flexible structure:** Works with any secret structure - no validation, no restrictions
 - **Laravel integration:** Register as singleton, use in any service provider
 
@@ -57,6 +58,7 @@ Add to your `.env` file:
 # AWS Secrets Manager Configuration
 AWS_SECRETS_REGION=us-east-1
 AWS_SECRETS_CACHE_TTL=300
+AWS_SECRETS_ROTATION_BUFFER_DAYS=7
 
 # Your secret names (example)
 AWS_SECRETS_DB_NAME=your-app/database/production
@@ -82,6 +84,7 @@ Add to `config/services.php`:
     'db_secret_name' => env('AWS_SECRETS_DB_NAME'),
     'secrets_region' => env('AWS_SECRETS_REGION', env('AWS_DEFAULT_REGION', 'us-east-1')),
     'secrets_cache_ttl' => env('AWS_SECRETS_CACHE_TTL', 300),
+    'secrets_rotation_buffer_days' => env('AWS_SECRETS_ROTATION_BUFFER_DAYS', 7),
     'secrets_force_enabled' => env('AWS_SECRETS_FORCE_ENABLED', false),
 ],
 ```
@@ -257,12 +260,79 @@ Your EC2/ECS/Lambda instances need this IAM policy:
 8. **Cache:** Service stores secret for 5 minutes (configurable)
 9. **Connect:** Laravel connects to database with fetched credentials
 
-## Credential Rotation
+## Intelligent Credential Rotation Detection
 
-- Credentials are cached for 5 minutes (configurable via `AWS_SECRETS_CACHE_TTL`)
-- After rotation in AWS, new credentials take effect within cache TTL
-- No application restart required
-- Use `php artisan cache:clear` to force immediate credential refresh
+The package includes advanced rotation detection that minimizes AWS API calls while ensuring credentials are always current:
+
+### How It Works
+
+1. **Rotation Schedule Tracking**: Fetches `NextRotationDate` from AWS Secrets Manager
+2. **Dynamic Cache TTL**: Automatically adjusts cache duration based on rotation schedule:
+   - **Rotation far away** (> 7 days): Caches secret until rotation buffer period starts
+   - **Rotation imminent** (≤ 7 days): Uses short TTL (5 minutes) for frequent checks
+   - **Maximum cache**: Capped at 30 days to prevent excessive cache times
+
+3. **Buffer Period**: Configurable period before rotation (default: 7 days) when checks become more frequent
+4. **Automatic Updates**: Detects rotated credentials and updates cache automatically
+
+### Configuration
+
+```env
+# Short TTL used during rotation buffer period (in seconds)
+AWS_SECRETS_CACHE_TTL=300
+
+# Days before rotation to start checking more frequently
+AWS_SECRETS_ROTATION_BUFFER_DAYS=7
+```
+
+### Example: Long Rotation Schedule
+
+If your secret rotates once per year (like your example: next rotation December 2026):
+
+1. **Far from rotation** (Jan 2026 - Nov 2026):
+   - Secret cached for months at a time
+   - Minimal AWS API calls (1 call every 30 days)
+
+2. **Entering buffer period** (7 days before rotation):
+   - Cache TTL switches to 5 minutes
+   - Checks every hour for rotation completion
+
+3. **After rotation occurs**:
+   - New credentials detected and cached immediately
+   - Returns to long-term caching
+
+### Benefits
+
+- **Drastically reduced AWS API costs** for infrequent rotations
+- **No manual cache clearing** needed after rotation
+- **Automatic detection** of rotation completion
+- **Seamless credential updates** without downtime
+- **Configurable buffer period** to match your needs
+
+### Manual Cache Control
+
+```bash
+# Force immediate credential refresh
+php artisan cache:clear
+
+# Or clear specific secret only
+$service->clearCache('your-secret-name');
+```
+
+### Monitoring Rotation Status
+
+```php
+$service = app(SecretsManagerService::class);
+$metadata = $service->getRotationMetadata('your-secret-name');
+
+// Returns:
+// [
+//     'rotation_enabled' => true,
+//     'next_rotation' => '2026-12-07 23:59:59',
+//     'last_rotated' => '2026-01-05 09:37:09',
+//     'last_checked' => '2026-02-16 10:30:00',
+// ]
+```
 
 ## Troubleshooting
 
