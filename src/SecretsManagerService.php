@@ -143,7 +143,7 @@ class SecretsManagerService
         $metadataKey = "aws_secret_metadata:{$secretName}";
 
         try {
-            Log::info("AWS Secrets Manager: Fetching secret from AWS", ['secret' => $secretName]);
+            Log::debug("AWS Secrets Manager: Fetching secret from AWS", ['secret' => $secretName]);
 
             // Fetch secret value
             $result = $this->client->getSecretValue([
@@ -169,18 +169,19 @@ class SecretsManagerService
             $metadata = $this->fetchRotationMetadata($secretName);
 
             // Determine cache TTL based on rotation schedule
-            $cacheTtl = $this->calculateCacheTtl($metadata['next_rotation'] ?? null);
+            $cacheTtl = $this->calculateCacheTtl($metadata);
 
             // Encrypt and cache the secret (metadata is not sensitive)
             $encryptedData = Crypt::encrypt($secretData);
             Cache::put($cacheKey, $encryptedData, $cacheTtl);
             Cache::put($metadataKey, $metadata, $cacheTtl);
 
-            Log::info("AWS Secrets Manager: Successfully fetched and cached secret", [
+            $rotationEnabled = $metadata['rotation_enabled'] ?? false;
+            Log::debug("AWS Secrets Manager: Successfully fetched and cached secret", [
                 'secret' => $secretName,
-                'cache_ttl_seconds' => $cacheTtl,
+                'cache_ttl_seconds' => $cacheTtl ?? 'forever',
                 'next_rotation' => $metadata['next_rotation'] ?? 'none',
-                'rotation_enabled' => $metadata['rotation_enabled'] ?? false,
+                'rotation_enabled' => $rotationEnabled,
             ]);
 
             return $secretData;
@@ -267,15 +268,23 @@ class SecretsManagerService
      * Calculate cache TTL based on rotation schedule
      *
      * Strategy:
-     * - No rotation or no next date: Use default TTL (5 minutes)
+     * - Rotation disabled: Cache forever (null TTL)
+     * - No next rotation date: Use default TTL
      * - Rotation far away (> buffer period): Cache until buffer period starts
-     * - Within buffer period: Use default TTL for more frequent checks
+     * - Within buffer period: Use default TTL for frequent checks
      *
-     * @param string|null $nextRotationDate Next rotation date in Y-m-d H:i:s format
-     * @return int Cache TTL in seconds
+     * @param array<string, mixed> $metadata Rotation metadata from AWS
+     * @return int|null Cache TTL in seconds, or null for forever
      */
-    private function calculateCacheTtl(?string $nextRotationDate): int
+    private function calculateCacheTtl(array $metadata): ?int
     {
+        // Rotation disabled — cache forever, no need to ever re-fetch
+        if (! ($metadata['rotation_enabled'] ?? false)) {
+            return null;
+        }
+
+        $nextRotationDate = $metadata['next_rotation'] ?? null;
+
         if ($nextRotationDate === null) {
             return $this->cacheTtl;
         }
