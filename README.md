@@ -61,6 +61,11 @@ AWS_SECRETS_REGION=us-east-1
 AWS_SECRETS_CACHE_TTL=300
 AWS_SECRETS_ROTATION_BUFFER_DAYS=7
 
+# Optional: Separate credentials for Secrets Manager
+# If not set, IAM role (EC2 instance profile) will be used
+# AWS_SECRETS_ACCESS_KEY_ID=your-key-id
+# AWS_SECRETS_SECRET_ACCESS_KEY=your-secret-key
+
 # Your secret names (examples for any use case)
 AWS_SECRETS_DB_NAME=your-app/database/production
 AWS_SECRETS_API_KEY=your-app/api-keys/production
@@ -83,8 +88,26 @@ Add to `config/services.php`:
     'secrets_cache_ttl' => env('AWS_SECRETS_CACHE_TTL', 300),
     'secrets_rotation_buffer_days' => env('AWS_SECRETS_ROTATION_BUFFER_DAYS', 7),
     'secrets_force_enabled' => env('AWS_SECRETS_FORCE_ENABLED', false),
+
+    // Optional: Separate credentials for Secrets Manager (if not using IAM role)
+    'secrets_key' => env('AWS_SECRETS_ACCESS_KEY_ID'),
+    'secrets_secret' => env('AWS_SECRETS_SECRET_ACCESS_KEY'),
 ],
 ```
+
+### AWS Authentication
+
+The package supports two authentication methods:
+
+1. **IAM Role (Recommended for Production)**
+   - Don't set `AWS_SECRETS_ACCESS_KEY_ID` or `AWS_SECRETS_SECRET_ACCESS_KEY`
+   - The package will automatically use the EC2 instance profile IAM role
+   - This prevents conflicts when `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are used for other services (e.g., S3)
+
+2. **Explicit Credentials (Development/Local)**
+   - Set `AWS_SECRETS_ACCESS_KEY_ID` and `AWS_SECRETS_SECRET_ACCESS_KEY`
+   - The package will use these credentials instead of the IAM role
+   - Useful for local development or when IAM roles aren't available
 
 ## Secret Structure
 

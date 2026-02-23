@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Beginly\SecretsManager;
 
+use Aws\Credentials\InstanceProfileProvider;
 use Aws\Exception\AwsException;
 use Aws\SecretsManager\SecretsManagerClient;
 use Illuminate\Support\Facades\Cache;
@@ -34,10 +35,30 @@ class SecretsManagerService
         $this->cacheTtl = (int) \config('services.aws.secrets_cache_ttl', 300);
         $this->rotationBufferDays = (int) \config('services.aws.secrets_rotation_buffer_days', 7);
 
-        $this->client = new SecretsManagerClient([
+        $clientConfig = [
             'version' => 'latest',
             'region' => \config('services.aws.secrets_region', 'us-east-1'),
-        ]);
+        ];
+
+        // Check for separate Secrets Manager credentials
+        $secretsKeyId = \config('services.aws.secrets_key');
+        $secretsSecret = \config('services.aws.secrets_secret');
+
+        if (!empty($secretsKeyId) && !empty($secretsSecret)) {
+            // Use explicit credentials for Secrets Manager
+            $clientConfig['credentials'] = [
+                'key' => $secretsKeyId,
+                'secret' => $secretsSecret,
+            ];
+            Log::debug('AWS Secrets Manager: Using explicit credentials from config');
+        } else {
+            // Use IAM role (EC2 instance profile) by explicitly setting the credential provider
+            // This prevents fallback to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars
+            $clientConfig['credentials'] = new InstanceProfileProvider();
+            Log::debug('AWS Secrets Manager: Using IAM role (EC2 instance profile)');
+        }
+
+        $this->client = new SecretsManagerClient($clientConfig);
     }
 
     /**
