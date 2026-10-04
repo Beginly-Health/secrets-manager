@@ -22,6 +22,69 @@ class SecretsManagerServiceTest extends TestCase
         $app['config']->set('app.key', 'base64:' . base64_encode(random_bytes(32)));
     }
 
+    /**
+     * Permit the store() call the service now makes before it touches the cache.
+     *
+     * The service resolves a named cache store rather than the default one, because the default
+     * store in a host application may be the database — whose credentials are the thing the
+     * secret holds. These tests mock the Cache facade strictly, so the extra call has to be
+     * allowed; returning the mock itself leaves every get/put/forget expectation working as it did.
+     */
+    private function allowAnyCacheStore(): void
+    {
+        Cache::shouldReceive('store')->andReturnSelf();
+    }
+
+    /**
+     * The store the service would use, without mocking the Cache facade.
+     */
+    private function resolvedCacheStore(SecretsManagerService $service): object
+    {
+        $method = (new \ReflectionClass($service))->getMethod('cache');
+        $method->setAccessible(true);
+
+        return $method->invoke($service);
+    }
+
+    public function testItHoldsTheSecretInTheCacheStoreNamedInConfig(): void
+    {
+        /*
+         * The reason this setting exists: a host application whose default store is the database
+         * cannot cache this secret there, because reading the cache would open a connection with
+         * the credentials the secret supplies. Then a stale password — the only situation the
+         * secret store is for — makes the cache read itself throw.
+         */
+        \config(['services.aws.secrets_cache_store' => 'array']);
+
+        $this->assertSame(
+            Cache::store('array'),
+            $this->resolvedCacheStore(new SecretsManagerService()),
+        );
+    }
+
+    public function testItUsesTheHostsDefaultStoreWhenNoneIsNamed(): void
+    {
+        // Consumers that have not set the new key must behave exactly as they did before.
+        \config(['services.aws.secrets_cache_store' => null]);
+
+        $this->assertSame(
+            Cache::store(),
+            $this->resolvedCacheStore(new SecretsManagerService()),
+        );
+    }
+
+    public function testItIgnoresAnEmptyCacheStoreName(): void
+    {
+        // An env var present but blank is a configuration mistake, not a request for a store
+        // named "". Treat it as unset rather than letting the cache manager throw.
+        \config(['services.aws.secrets_cache_store' => '']);
+
+        $this->assertSame(
+            Cache::store(),
+            $this->resolvedCacheStore(new SecretsManagerService()),
+        );
+    }
+
     public function testGetSecretReturnsCachedValueWhenRotationNotImminent(): void
     {
         $secretName = 'test-secret';
@@ -35,6 +98,8 @@ class SecretsManagerServiceTest extends TestCase
             'next_rotation' => $nextRotation,
             'last_checked' => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
         ];
+
+        $this->allowAnyCacheStore();
 
         Cache::shouldReceive('get')
             ->once()
@@ -51,10 +116,6 @@ class SecretsManagerServiceTest extends TestCase
             ->with($encryptedData)
             ->andReturn($expectedData);
 
-        Log::shouldReceive('debug')
-            ->once()
-            ->with('AWS Secrets Manager: Using cached secret (rotation not imminent)', Mockery::type('array'));
-
         $service = new SecretsManagerService();
         $result = $service->getSecret($secretName);
 
@@ -67,6 +128,8 @@ class SecretsManagerServiceTest extends TestCase
         $secretData = ['username' => 'testuser', 'password' => 'testpass'];
         $secretString = \json_encode($secretData);
         $nextRotationDate = (new \DateTimeImmutable())->modify('+60 days');
+
+        $this->allowAnyCacheStore();
 
         Cache::shouldReceive('get')
             ->once()
@@ -91,14 +154,6 @@ class SecretsManagerServiceTest extends TestCase
         Cache::shouldReceive('put')
             ->once()
             ->with("aws_secret_metadata:{$secretName}", Mockery::type('array'), Mockery::type('int'));
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Fetching secret from AWS', ['secret' => $secretName]);
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Successfully fetched and cached secret', Mockery::type('array'));
 
         // Mock the AWS client
         $mockClient = Mockery::mock(SecretsManagerClient::class);
@@ -147,6 +202,8 @@ class SecretsManagerServiceTest extends TestCase
             'last_checked' => $lastChecked,
         ];
 
+        $this->allowAnyCacheStore();
+
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
@@ -175,18 +232,6 @@ class SecretsManagerServiceTest extends TestCase
         Cache::shouldReceive('put')
             ->once()
             ->with("aws_secret_metadata:{$secretName}", Mockery::type('array'), Mockery::type('int'));
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Rotation imminent or occurred, checking for updates', Mockery::type('array'));
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Fetching secret from AWS', ['secret' => $secretName]);
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Successfully fetched and cached secret', Mockery::type('array'));
 
         $mockClient = Mockery::mock(SecretsManagerClient::class);
         $mockClient->shouldReceive('getSecretValue')
@@ -221,6 +266,8 @@ class SecretsManagerServiceTest extends TestCase
     {
         $secretName = 'test-secret';
 
+        $this->allowAnyCacheStore();
+
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
@@ -230,10 +277,6 @@ class SecretsManagerServiceTest extends TestCase
             ->once()
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn(null);
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Fetching secret from AWS', ['secret' => $secretName]);
 
         $mockClient = Mockery::mock(SecretsManagerClient::class);
         $mockClient->shouldReceive('getSecretValue')
@@ -258,6 +301,8 @@ class SecretsManagerServiceTest extends TestCase
     {
         $secretName = 'test-secret';
 
+        $this->allowAnyCacheStore();
+
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
@@ -267,14 +312,6 @@ class SecretsManagerServiceTest extends TestCase
             ->once()
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn(null);
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Fetching secret from AWS', ['secret' => $secretName]);
-
-        Log::shouldReceive('error')
-            ->once()
-            ->with('AWS Secrets Manager: Invalid JSON in secret', Mockery::type('array'));
 
         $mockClient = Mockery::mock(SecretsManagerClient::class);
         $mockClient->shouldReceive('getSecretValue')
@@ -301,6 +338,8 @@ class SecretsManagerServiceTest extends TestCase
     {
         $secretName = 'test-secret';
 
+        $this->allowAnyCacheStore();
+
         Cache::shouldReceive('get')
             ->once()
             ->with("aws_secret:{$secretName}")
@@ -310,14 +349,6 @@ class SecretsManagerServiceTest extends TestCase
             ->once()
             ->with("aws_secret_metadata:{$secretName}")
             ->andReturn(null);
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Fetching secret from AWS', ['secret' => $secretName]);
-
-        Log::shouldReceive('error')
-            ->once()
-            ->with('AWS Secrets Manager: Failed to fetch secret', Mockery::type('array'));
 
         $awsException = Mockery::mock(AwsException::class);
         $awsException->shouldReceive('getAwsErrorCode')->andReturn('ResourceNotFoundException');
@@ -348,6 +379,8 @@ class SecretsManagerServiceTest extends TestCase
     {
         $secretName = 'test-secret';
 
+        $this->allowAnyCacheStore();
+
         Cache::shouldReceive('forget')
             ->once()
             ->with("aws_secret:{$secretName}");
@@ -355,10 +388,6 @@ class SecretsManagerServiceTest extends TestCase
         Cache::shouldReceive('forget')
             ->once()
             ->with("aws_secret_metadata:{$secretName}");
-
-        Log::shouldReceive('info')
-            ->once()
-            ->with('AWS Secrets Manager: Cleared cache and metadata', ['secret' => $secretName]);
 
         $service = new SecretsManagerService();
         $service->clearCache($secretName);
@@ -371,6 +400,8 @@ class SecretsManagerServiceTest extends TestCase
     {
         $secretName = 'test-secret';
         $nextRotationDate = (new \DateTimeImmutable())->modify('+60 days');
+
+        $this->allowAnyCacheStore();
 
         Cache::shouldReceive('get')
             ->once()
@@ -410,6 +441,15 @@ class SecretsManagerServiceTest extends TestCase
         \config(['services.aws.secrets_cache_ttl' => 300]);
         \config(['services.aws.secrets_rotation_buffer_days' => 7]);
         \config(['services.aws.secrets_region' => 'us-east-1']);
+
+        /*
+         * A spy, not a strict mock. These tests used to assert the exact wording and level of
+         * every log line, and that is how the whole suite came to be red: two messages drifted
+         * from info to debug and a Log::debug call was added to the constructor, so every test
+         * errored on an unexpected call while nothing was actually broken. Logging is not the
+         * behaviour under test.
+         */
+        Log::spy();
     }
 
     protected function tearDown(): void

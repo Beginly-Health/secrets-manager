@@ -61,6 +61,10 @@ AWS_SECRETS_REGION=us-east-1
 AWS_SECRETS_CACHE_TTL=300
 AWS_SECRETS_ROTATION_BUFFER_DAYS=7
 
+# The cache store the secret is held in. Required reading if your app's default
+# cache store is `database`: see "Choosing a cache store" below.
+AWS_SECRETS_CACHE_STORE=file
+
 # Optional: Separate credentials for Secrets Manager
 # If not set, IAM role (EC2 instance profile) will be used
 # AWS_SECRETS_ACCESS_KEY_ID=your-key-id
@@ -88,11 +92,44 @@ Add to `config/services.php`:
     'secrets_cache_ttl' => env('AWS_SECRETS_CACHE_TTL', 300),
     'secrets_rotation_buffer_days' => env('AWS_SECRETS_ROTATION_BUFFER_DAYS', 7),
     'secrets_force_enabled' => env('AWS_SECRETS_FORCE_ENABLED', false),
+    'secrets_cache_store' => env('AWS_SECRETS_CACHE_STORE', 'file'),
 
     // Optional: Separate credentials for Secrets Manager (if not using IAM role)
     'secrets_key' => env('AWS_SECRETS_ACCESS_KEY_ID'),
     'secrets_secret' => env('AWS_SECRETS_SECRET_ACCESS_KEY'),
 ],
+```
+
+### Choosing a cache store
+
+**If your application's default cache store is the database, you must set
+`secrets_cache_store` to something else.** A database-backed cache makes the secret
+unreachable in the one situation it exists for.
+
+The service caches the fetched secret so it is not refetched on every request. If that
+cache is the database, then reading it opens a database connection — using the very
+credentials the secret is there to supply. While the configured credentials are valid,
+this works and is pointless. The moment they are stale, which is precisely when the
+secret store is needed, the cache read itself throws, and the failure is reported as
+"could not fetch secret" rather than as the connection problem it actually is.
+
+`file` has no such dependency and is the usual answer. The cached value is encrypted
+with the application key before it is written, so the file holds ciphertext, not
+credentials.
+
+Leaving the key unset resolves your application's default store, which is the behaviour
+this package had before the setting existed — so existing installs are unaffected until
+they opt in.
+
+```php
+// Safe: no dependency on the thing the secret configures
+'secrets_cache_store' => 'file',
+
+// Also fine where available
+'secrets_cache_store' => 'redis',
+
+// Unsafe when the secret holds this database's own credentials
+'secrets_cache_store' => 'database',
 ```
 
 ### AWS Authentication
