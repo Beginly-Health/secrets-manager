@@ -7,6 +7,8 @@ namespace Beginly\SecretsManager;
 use Aws\Credentials\InstanceProfileProvider;
 use Aws\Exception\AwsException;
 use Aws\SecretsManager\SecretsManagerClient;
+use Illuminate\Cache\CacheManager;
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +31,8 @@ class SecretsManagerService
     private int $cacheTtl;
 
     private int $rotationBufferDays;
+
+    private Repository|CacheManager|null $cache = null;
 
     public function __construct()
     {
@@ -79,8 +83,8 @@ class SecretsManagerService
         $metadataKey = "aws_secret_metadata:{$secretName}";
 
         // Check if we have cached secret data
-        $encryptedCached = Cache::get($cacheKey);
-        $metadata = Cache::get($metadataKey);
+        $encryptedCached = $this->cache()->get($cacheKey);
+        $metadata = $this->cache()->get($metadataKey);
 
         // Decrypt cached secret if it exists
         $cached = null;
@@ -93,8 +97,8 @@ class SecretsManagerService
                     'error' => $e->getMessage(),
                 ]);
                 // Cache is corrupted, clear it and refetch
-                Cache::forget($cacheKey);
-                Cache::forget($metadataKey);
+                $this->cache()->forget($cacheKey);
+                $this->cache()->forget($metadataKey);
                 return $this->fetchAndCacheSecret($secretName);
             }
         }
@@ -194,8 +198,8 @@ class SecretsManagerService
 
             // Encrypt and cache the secret (metadata is not sensitive)
             $encryptedData = Crypt::encrypt($secretData);
-            Cache::put($cacheKey, $encryptedData, $cacheTtl);
-            Cache::put($metadataKey, $metadata, $cacheTtl);
+            $this->cache()->put($cacheKey, $encryptedData, $cacheTtl);
+            $this->cache()->put($metadataKey, $metadata, $cacheTtl);
 
             $rotationEnabled = $metadata['rotation_enabled'] ?? false;
             Log::debug("AWS Secrets Manager: Successfully fetched and cached secret", [
@@ -338,6 +342,31 @@ class SecretsManagerService
     }
 
     /**
+     * The cache store the secret is held in, which must not itself depend on the secret.
+     *
+     * A host application whose default cache store is the database cannot use the default store
+     * here: reading the cache opens a database connection with the very credentials this secret
+     * exists to supply. In the one case the secret store is needed — the host's configured
+     * credentials being stale — the cache read itself throws, and the failure then surfaces as
+     * "could not fetch secret" rather than as the connection problem it actually is.
+     *
+     * `services.aws.secrets_cache_store` names a store with no such dependency; `file` is the
+     * usual answer, and the value cached is ciphertext, not credentials. Left unset this resolves
+     * the host's default store exactly as before, so existing consumers are unaffected until they
+     * choose to set it.
+     */
+    private function cache(): Repository|CacheManager
+    {
+        if ($this->cache !== null) {
+            return $this->cache;
+        }
+
+        $store = \config('services.aws.secrets_cache_store');
+
+        return $this->cache = Cache::store(\is_string($store) && $store !== '' ? $store : null);
+    }
+
+    /**
      * Clear cached secret and rotation metadata
      *
      * @param string $secretName The name/ARN of the secret
@@ -347,8 +376,8 @@ class SecretsManagerService
         $cacheKey = "aws_secret:{$secretName}";
         $metadataKey = "aws_secret_metadata:{$secretName}";
 
-        Cache::forget($cacheKey);
-        Cache::forget($metadataKey);
+        $this->cache()->forget($cacheKey);
+        $this->cache()->forget($metadataKey);
 
         Log::info("AWS Secrets Manager: Cleared cache and metadata", ['secret' => $secretName]);
     }
@@ -366,7 +395,7 @@ class SecretsManagerService
         $metadataKey = "aws_secret_metadata:{$secretName}";
 
         // Check cache first
-        $cached = Cache::get($metadataKey);
+        $cached = $this->cache()->get($metadataKey);
         if ($cached !== null) {
             return $cached;
         }
